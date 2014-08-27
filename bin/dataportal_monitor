@@ -1,0 +1,148 @@
+#!/usr/bin/python
+import re
+import sys
+import time
+import logging
+import daemon
+import traceback
+import ConfigParser
+
+from dataportal_monitor.log_file_reader import LogFileReader, LogFileNotFound
+from dataportal_monitor.timed_combined_parser import TimedCombinedParser, ParseError
+from dataportal_monitor.box_info import BoxInfo, InfoError
+from dataportal_monitor.graphite_service import GraphiteService, FailedToConnect
+
+config = {}
+
+def daemon_loop(logger, boxinfo, graphite, reader, parser):
+    """ This is the main loop of the daemon """
+    while True:
+        loopstart = time.time()
+        line = reader.readline()
+        if not line:
+            time.sleep(config['update_period'])
+        else:
+            while line and loopstart + config['update_period'] > time.time():
+                try:
+                    data = parser.parse(line)
+                except ParseError:
+                    data = None
+                if data:
+                    graphite.add('http.bytes_sent', data['bytes_sent'])
+                    graphite.add('http.request_time', data['request_time'])
+                    graphite.add('http.upstream_time', data['upstream_time'])
+                    if data['upstream_time'] == 0.0:
+                        graphite.add('http.cache_hits', 1)
+                    graphite.add('http.requests', 1)
+                line = reader.readline()
+        left = loopstart + config['update_period'] - time.time()
+        if left > 0:
+            time.sleep(left)
+        try:
+            boxinfo.refresh()
+        except InfoError:
+            pass
+        else:
+            graphite.add('cpu.loadavg.1min', boxinfo.cpu['loadavg1min'])
+            graphite.add('mem.total', boxinfo.mem['total'])
+            graphite.add('mem.used', boxinfo.mem['used'])
+            graphite.add('swap.total', boxinfo.swap['total'])
+            graphite.add('swap.used', boxinfo.swap['used'])
+            graphite.flush()
+
+def run(logger):
+    """ Setup the daemon and start the main loop"""
+    logger.info('Setting up dataportal monitor with graphite host at {}:{}'.format(config['graphite'], config['port']))
+
+    # Create the BoxInfo objec, and see if the initial parsing of cpu/mem worked. Quit if
+    # not.
+    try:
+        boxinfo = BoxInfo()
+    except InfoError:
+        logger.error('Failed to parse /proc/meminfo or /proc/loadavg. Goodbye')
+        return
+
+    # Create the Graphite service, and see if the initial connection works. Quit if not.
+    try:
+        graphite = GraphiteService(config['graphite'], config['port'], config['path_prefix'], {
+            'http.bytes_sent': 'sum',
+            'http.request_time': 'avg',
+            'http.upstream_time': 'avg',
+            'http.cache_hits': 'sum',
+            'http.requests': 'sum',
+            'cpu.loadavg.1min': 'avg',
+            'mem.total': 'avg',
+            'mem.used': 'avg',
+            'swap.total': 'avg',
+            'swap.used': 'avg'
+        }, logger)
+    except FailedToConnect:
+        logger.error('Failed to connecto to Graphite server')
+        return
+
+    # Open the nginx log file
+    try:
+        reader = LogFileReader(config['nginx_log'])
+    except LogFileNotFound:
+        logger.error('Failed to open nginx log file')
+        graphite.close()
+        return
+
+    # Create log parser
+    parser = TimedCombinedParser()
+
+    # And start.
+    logger.info('Entering main loop')
+    try:
+        daemon_loop(logger, boxinfo, graphite, reader, parser)
+    finally:
+        reader.close()
+        graphite.close()
+
+def bootstrap():
+    """Setup the logger, and start the daemon"""
+    level_map = {'error': logging.ERROR, 'info': logging.INFO, 'debug': logging.DEBUG}
+    logger = logging.getLogger()
+    logger.setLevel(level_map[config['log_level']])
+    logger.addHandler(logging.FileHandler(config['log_file']))
+    try:
+        run(logger)
+    except:
+        logger.error(traceback.format_exc())
+
+def read_config(file_name):
+    """Read the config file into the main config object, and cast
+       values appropriately"""
+    cp = ConfigParser.ConfigParser()
+    cp.read(file_name)
+    bool_options = ['daemon']
+    int_options = ['port']
+    float_options = ['update_period']
+    for option in cp.options('main'):
+       value = cp.get('main', option)
+       if option in bool_options:
+           config[option] = (value.lower() in ['true', '1', 'on'])
+       elif option in int_options:
+           config[option] = int(value)
+       elif option in float_options:
+           config[option] = float(value)
+       else:
+           config[option] = value 
+
+# Launch the monitor
+if __name__ == "__main__":
+    # Parse config gile
+    if len(sys.argv) == 2:
+        config_file_name = sys.argv[1]
+    elif len(sys.argv) != 1:
+        print "Usage: {} [path to config file]".format(sys.argv[0])
+        sys.exit(1)
+    else:
+        config_file_name = '/etc/dataportal_monitor/config.ini'
+    read_config(config_file_name)
+    if config['daemon']:
+        with daemon.DaemonContext():
+            bootstrap()
+    else:
+        bootstrap()
+
