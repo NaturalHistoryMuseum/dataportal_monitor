@@ -31,6 +31,7 @@ run	cd /var/lib/graphite/webapp/graphite && python manage.py syncdb --noinput
 
 # Configure graphana
 add	./grafana_config.js /src/grafana/config.js
+add     ./dashboard.json /src/grafana/app/dashboards/default.json
 
 # Configure nginx and supervisord 
 add	./nginx.conf /etc/nginx/nginx.conf
