@@ -17,7 +17,7 @@ The monitoring daemon will report to the Graphite server:
 - Time spent for http requests; 
 - Time spent for non-cached http generation.
 
-Load, memory, swap and time are averaged over each second, while requests and cache hits are summed over each second - so there is no need for a carbon-aggregator or statd frontend to grahite.
+Load, memory, swap and time are averaged over each second, while requests and cache hits are summed over each second - so there is no need to use carbon-aggregator (though you can if you want to do further aggregations).
 
 The monitor expects that the server is runing an nginx proxy cache, with the following log format:
 
@@ -46,8 +46,12 @@ To run the Graphite server:
 - Run `build.sh` (once)
 - Run `run.sh`.
 
+The database data is stored in `/var/lib/dataportal_monitor`. To change this path edit `build.sh` and `run.sh`. If you want a terminal in the server, run the docker run command add add `/bin/bash` at the end. You can then start the services by running `/usr/bin/supervisord`.
+
 Configuration
 -------------
+
+Configuration for the monitoring daemon. This is expected to be in /etc/dataportal_monitor/config.ini by default:
 
 ```
 [main]
