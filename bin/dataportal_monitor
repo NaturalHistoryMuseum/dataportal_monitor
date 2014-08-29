@@ -7,7 +7,7 @@ import daemon
 import traceback
 import ConfigParser
 
-from dataportal_monitor.log_file_reader import LogFileReader, LogFileNotFound
+from dataportal_monitor.log_file_reader import LogFileReader, LogFileAbsent
 from dataportal_monitor.timed_combined_parser import TimedCombinedParser, ParseError
 from dataportal_monitor.box_info import BoxInfo, InfoError
 from dataportal_monitor.graphite_service import GraphiteService, FailedToConnect
@@ -18,7 +18,12 @@ def daemon_loop(logger, boxinfo, graphite, reader, parser):
     """ This is the main loop of the daemon """
     while True:
         loopstart = time.time()
-        line = reader.readline()
+        # Read log lines (as much as we can in given time)
+        try:
+            line = reader.readline()
+        except LogFileAbsent:
+            logger.error('Failed to open nginx log')
+            line = None
         if not line:
             time.sleep(config['update_period'])
         else:
@@ -35,58 +40,54 @@ def daemon_loop(logger, boxinfo, graphite, reader, parser):
                         graphite.add('http.cache_hits', 1)
                     graphite.add('http.requests', 1)
                 line = reader.readline()
-        left = loopstart + config['update_period'] - time.time()
-        if left > 0:
-            time.sleep(left)
+        # Read cpu/mem/swap/io stats
         try:
             boxinfo.refresh()
         except InfoError:
-            pass
+            log.error('Failed to get cpu/mem/swap/io stats')
         else:
             graphite.add('cpu.loadavg.1min', boxinfo.cpu['loadavg1min'])
             graphite.add('mem.total', boxinfo.mem['total'])
             graphite.add('mem.used', boxinfo.mem['used'])
             graphite.add('swap.total', boxinfo.swap['total'])
             graphite.add('swap.used', boxinfo.swap['used'])
+        # Send data to graphite
+        try:
             graphite.flush()
+        except FailedToConnect:
+            log.error('Failed to connect to graphite server')
+        # Sleep
+        left = loopstart + config['update_period'] - time.time()
+        if left > 0:
+            time.sleep(left)
 
 def run(logger):
     """ Setup the daemon and start the main loop"""
     logger.info('Setting up dataportal monitor with graphite host at {}:{}'.format(config['graphite'], config['port']))
 
-    # Create the BoxInfo objec, and see if the initial parsing of cpu/mem worked. Quit if
-    # not.
-    try:
-        boxinfo = BoxInfo()
-    except InfoError:
-        logger.error('Failed to parse /proc/meminfo or /proc/loadavg. Goodbye')
-        return
+    # Create the BoxInfo object
+    boxinfo = BoxInfo()
 
-    # Create the Graphite service, and see if the initial connection works. Quit if not.
+    # Create the Graphite service.
+    graphite = GraphiteService(config['graphite'], config['port'], config['path_prefix'], {
+        'http.bytes_sent': 'sum',
+        'http.request_time': 'avg',
+        'http.upstream_time': 'avg',
+        'http.cache_hits': 'sum',
+        'http.requests': 'sum',
+        'cpu.loadavg.1min': 'avg',
+        'mem.total': 'avg',
+        'mem.used': 'avg',
+        'swap.total': 'avg',
+        'swap.used': 'avg'
+    }, logger)
     try:
-        graphite = GraphiteService(config['graphite'], config['port'], config['path_prefix'], {
-            'http.bytes_sent': 'sum',
-            'http.request_time': 'avg',
-            'http.upstream_time': 'avg',
-            'http.cache_hits': 'sum',
-            'http.requests': 'sum',
-            'cpu.loadavg.1min': 'avg',
-            'mem.total': 'avg',
-            'mem.used': 'avg',
-            'swap.total': 'avg',
-            'swap.used': 'avg'
-        }, logger)
+        graphite.connect()
     except FailedToConnect:
-        logger.error('Failed to connecto to Graphite server')
-        return
+        logger.error('Failed to connect to graphite server.')
 
     # Open the nginx log file
-    try:
-        reader = LogFileReader(config['nginx_log'])
-    except LogFileNotFound:
-        logger.error('Failed to open nginx log file')
-        graphite.close()
-        return
+    reader = LogFileReader(config['nginx_log'])
 
     # Create log parser
     parser = TimedCombinedParser()

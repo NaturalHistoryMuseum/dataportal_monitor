@@ -28,7 +28,7 @@ The monitor expects that the server is runing an nginx proxy cache, with the fol
                               '$request_time $upstream_response_time';
 ```
 
-The monitoring process will not catch up on missed log entries if is switched off.
+The monitoring process will not catch up on missed log entries if is switched off. It will continue working, and recover, if the graphite server or the monitored log files are temporarilly unavailable.
 
 The Grafana front end includes a default dashboard to monitor all servers. There is no backend to save additional dashboards, but those can be exported as JSON files.
 

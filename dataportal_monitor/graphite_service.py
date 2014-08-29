@@ -14,7 +14,7 @@ class GraphiteService(object):
  
         Class used to send values to a graphite server
     """
-    def __init__(self, host, port, root, schema, logger, aggreg_time=1):
+    def __init__(self, host, port, root, schema, logger, aggreg_time=1, timeout=60):
         """ Create a new graphite service.
 
         @param host: Graphite server name or IP
@@ -26,6 +26,7 @@ class GraphiteService(object):
         @param logger: Logger object. Only used for debugging - errors are raised.
         @param aggred_time: Time over which to aggregate. This must be at least 1 second,
                             otherwise the values sent to Graphite will be wrong.
+        @param timeout: Connection timeout
         @raises: FailedToConnect
         """
         self.host = host
@@ -34,11 +35,12 @@ class GraphiteService(object):
         self.schema = schema
         self.logger = logger
         self.aggreg_time = aggreg_time
+        self.timeout = timeout
         self.values = {} 
+        self.messages = []
         self.socket = None
-        self._connect()
     
-    def _connect(self):
+    def connect(self):
         """ Attempt to connect to the graphite server
 
         @raises: FailedToConnect
@@ -50,8 +52,10 @@ class GraphiteService(object):
                 pass
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(self.timeout)
             self.socket.connect((self.host, self.port))
         except (socket.error, socket.herror, socket.gaierror, socket.timeout) as e:
+            self.socket = None
             raise FailedToConnect()
 
     def add(self, name, value):
@@ -71,10 +75,11 @@ class GraphiteService(object):
      
     def flush(self):
         """ Send any values added more than aggreg_time ago to the Graphite
-            server
+            server. Will automatically connect to the server if not connected.
+
+        @raise: FailedToConnect
         """
         time_now = int(time.time())
-        messages = []
         clear = []
         # Find messages to send
         for add_time in self.values:
@@ -94,32 +99,43 @@ class GraphiteService(object):
                     value=value,
                     timestamp=add_time
                 )
-                messages.append(message)
+                self.messages.append(message)
         # Clear up
         for add_time in clear:
             del self.values[add_time]
         # And send
-        if len(messages) > 0:
-            message = ''.join(messages)
+        if len(self.messages) > 0:
+            message = ''.join(self.messages)
             self.logger.debug(message)
-            self._send(message)
+            try:
+                self._send(message)
+            except FailedToConnect:
+                raise
+            else:
+                self.messages = [] 
 
-    def _send(self, data, recon=True):
+    def _send(self, data, retry=True):
         """ Send the data to the graphite server
-       
+        
+        Will automatically connect to the server if not connected.
+ 
         @param data: String to send to the server
         @param retry: If true, will attempt to re-connect to the server and retry on error
+        @raise: FailedToconnect
         """
+        if not self.socket:
+            self.connect()
         try:
             self.socket.sendall(data)
         except (socket.error, socket.timeout) as e:
             if retry:
-                self._connect()
+                self.connect()
                 self._send(data, False)
             else:
                 raise FailedToConnect()
 
     def close(self):
         """Close the connection to the server"""
-        self.socket.close()
-
+        if self.socket:
+            self.socket.close()
+            self.socket = None
