@@ -1,3 +1,6 @@
+import re
+import fnmatch
+import types
 import socket
 import time
 
@@ -22,7 +25,9 @@ class GraphiteService(object):
         @param root: Path to append to all metric paths sent
         @param schema: Schema defining how to aggregate metrics. This is a dictionary
                        and should include an entry for every path metric that may be
-                       added (without the root) set to either 'sum' or 'avg'
+                       added (without the root, unix-style shell wildcards are accepted).
+                       The supported values are 'sum', 'avg', 'min', 'max' or a user defined
+                       function;
         @param logger: Logger object. Only used for debugging - errors are raised.
         @param aggred_time: Time over which to aggregate. This must be at least 1 second,
                             otherwise the values sent to Graphite will be wrong.
@@ -32,13 +37,19 @@ class GraphiteService(object):
         self.host = host
         self.port = port
         self.root = root
-        self.schema = schema
         self.logger = logger
         self.aggreg_time = aggreg_time
         self.timeout = timeout
         self.values = {} 
         self.messages = []
         self.socket = None
+        self.schema = schema
+        self._schema_re = [] 
+        for expr in self.schema:
+            self._schema_re.append({
+                'regexp': re.compile(fnmatch.translate(expr)),
+                'aggregate': self.schema[expr]
+            })
     
     def connect(self):
         """ Attempt to connect to the graphite server
@@ -61,7 +72,7 @@ class GraphiteService(object):
     def add(self, name, value):
         """ Add a new metric path and value
 
-        @param path: Metric path. Must be declared in schema;
+        @param path: Metric path. If this does not match any entry in the schema, then 'avg' will be used 
         @param value: Value for the path. Must be a number
         """
         time_now = int(time.time())
@@ -72,7 +83,36 @@ class GraphiteService(object):
                 self.values[time_now][name] = [value]
         else:
             self.values[time_now] = {name: [value]}
-     
+    
+    def _aggregate(self, name, values):
+        """ Aggregate the list of values according to schema
+ 
+        @param name: Metric path to aggregrate
+        @param values: List of values to aggregate
+        @raise: UnknownSchema
+        @return: Aggregated value
+        """
+        # Find the aggregator to use
+        agg = 'avg'
+        if name in self.schema:
+            agg = self.schema[name]
+        else:
+            for match in self._schema_re:
+                if match['regexp'].match(name):
+                    agg = match['aggregate'] 
+                    break
+        # Apply the aggregation
+        if type(agg) == types.FunctionType:
+            return agg(values) 
+        elif agg == 'sum':
+            return sum(values)
+        elif agg == 'avg':
+            return sum(values) / float(len(values))
+        elif agg == 'max':
+            return max(values)
+        elif agg == 'min':
+            return min(values)
+
     def flush(self):
         """ Send any values added more than aggreg_time ago to the Graphite
             server. Will automatically connect to the server if not connected.
@@ -87,12 +127,7 @@ class GraphiteService(object):
                 break
             clear.append(add_time)
             for name in self.values[add_time]:
-                if self.schema[name] == 'sum':
-                    value = sum(self.values[add_time][name])
-                elif self.schema[name] == 'avg':
-                    value = sum(self.values[add_time][name]) / float(len(self.values[add_time][name]))                        
-                else:
-                    raise UnknownSchema()
+                value = self._aggregate(name, self.values[add_time][name])
                 message = "{root}.{name} {value} {timestamp}\n".format(
                     root=self.root,
                     name=name,
