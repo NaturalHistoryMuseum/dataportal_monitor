@@ -46,11 +46,16 @@ def daemon_loop(logger, boxinfo, graphite, reader, parser):
         except InfoError:
             log.error('Failed to get cpu/mem/swap/io stats')
         else:
-            graphite.add('cpu.loadavg.1min', boxinfo.cpu['loadavg1min'])
+            graphite.add('cpu.loadavg.1min', boxinfo.cpu['loadavg']['1min'])
             graphite.add('mem.total', boxinfo.mem['total'])
             graphite.add('mem.used', boxinfo.mem['used'])
             graphite.add('swap.total', boxinfo.swap['total'])
             graphite.add('swap.used', boxinfo.swap['used'])
+            for device in boxinfo.io:
+                graphite.add('io.' + device + '.read.bytes', boxinfo.io[device]['read']['bytes'])
+                graphite.add('io.' + device + '.read.ms', boxinfo.io[device]['read']['ms'])
+                graphite.add('io.' + device + '.write.bytes', boxinfo.io[device]['write']['bytes'])
+                graphite.add('io.' + device + '.write.ms', boxinfo.io[device]['write']['ms'])
         # Send data to graphite
         try:
             graphite.flush()
@@ -66,7 +71,7 @@ def run(logger):
     logger.info('Setting up dataportal monitor with graphite host at {}:{}'.format(config['graphite'], config['port']))
 
     # Create the BoxInfo object
-    boxinfo = BoxInfo()
+    boxinfo = BoxInfo(config['devices'])
 
     # Create the Graphite service.
     graphite = GraphiteService(config['graphite'], config['port'], config['path_prefix'], {
@@ -79,7 +84,11 @@ def run(logger):
         'mem.total': 'avg',
         'mem.used': 'avg',
         'swap.total': 'avg',
-        'swap.used': 'avg'
+        'swap.used': 'avg',
+        'io.*.read.bytes': 'max',
+        'io.*.read.ms': 'max',
+        'io.*.write.bytes': 'max',
+        'io.*.write.ms': 'max'
     }, logger)
     try:
         graphite.connect()
@@ -119,6 +128,7 @@ def read_config(file_name):
     bool_options = ['daemon']
     int_options = ['port']
     float_options = ['update_period']
+    list_options = ['devices']
     for option in cp.options('main'):
        value = cp.get('main', option)
        if option in bool_options:
@@ -127,8 +137,12 @@ def read_config(file_name):
            config[option] = int(value)
        elif option in float_options:
            config[option] = float(value)
+       elif option in list_options:
+           config[option] = [s.strip() for s in value.split(',')]
        else:
            config[option] = value 
+    if 'devices' not in config:
+        config['devices'] = []
 
 # Launch the monitor
 if __name__ == "__main__":

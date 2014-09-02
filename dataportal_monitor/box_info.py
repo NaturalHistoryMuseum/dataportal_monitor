@@ -10,18 +10,59 @@ class BoxInfo(object):
         This class is used to gather information about the system this is running on.
         Objects of this class have three properties that can be read:
 
-        - mem: Dictionary, defining 'total', 'used', 'free';
-        - swap: Dictionary, defining 'total', 'used', free';
-        - cpu, Dictionary, defining 'loadavg1min', 'loadavg5min' and 'loadavg15min';
-        - io defining a dictionary with nothing.
+        - mem: Dictionary as {
+            'total': (total memory in bytes), 
+            'used': (used memory in bytes), 
+            'free': (free memory in bytes)
+        }
+        - swap: Dictionary as {
+            'total': (total swap space in bytes),
+            'used': (used swap space in bytes),
+            'free': (free swp space in bytes)
+        }
+        - cpu: Dictionary as {
+            'loadavg': {
+                '1min': 1 minute load average,
+                '5min': 5 minute load average,
+                '15min': 15 minute load average
+            }
+        - io: Dictionary as {
+            (device name): {
+                'read': {
+                    'bytes': (Total number of bytes read on the device),
+                    'ms': (Total number of milliseconds spent reading on the device)
+                },
+                'write': {
+                    'bytes': (Total number of bytes written to the device),
+                    'ms': (Total number of milliseconds spent writting on the device)
+                }
+            }
      
         Call refresh on the object to refresh those statistics.
    """
-    def __init__(self):
+    def __init__(self, devices=None):
         """ Create a new BoxInfo object and read initial statistics """
+        if devices:
+            self._devices = devices
+        else:
+            self._devices = []
         self.unit_fact = {'b': 1, 'kb': 1024, 'mb': 1024*1024, 'gb': 1024*1024*1024}
         self.meminfo_pattern = re.compile(r'^(?P<label>\S+):\s+(?P<value>\S+)\s+(?P<unit>\S+)$')
         self.loadavg_pattern = re.compile(r'^(?P<avg1min>[0-9.]+) (?P<avg5min>[0-9.]+) (?P<avg15min>[0-9.]+) (\d+)/(\d+) (\d+)$')
+        # See https://www.kernel.org/doc/Documentation/block/stat.txt
+        self.block_stat_pattern = re.compile(r'^\s*' + r'\s+'.join([
+            r'(?P<readios>\d+)',
+            r'(?P<readmerges>\d+)',
+            r'(?P<readsectors>\d+)',
+            r'(?P<readticks>\d+)',
+            r'(?P<writeios>\d+)',
+            r'(?P<writemerges>\d+)',
+            r'(?P<writesectors>\d+)',
+            r'(?P<writeticks>\d+)',
+            r'(?P<infligh>\d+)',
+            r'(?P<ioticks>\d+)',
+            r'(?P<timeinqueue>\d+)'
+        ]) + '\s*$')
         self.refresh()
 
     def refresh(self):
@@ -57,10 +98,31 @@ class BoxInfo(object):
             if p:
                 m = p.groupdict()
                 self.cpu = {
-                    'loadavg1min': float(m['avg1min']), 
-                    'loadavg5min': float(m['avg5min']), 
-                    'loadavg15min': float(m['avg15min'])
+                    'loadavg': {
+                        '1min': float(m['avg1min']), 
+                        '5min': float(m['avg5min']), 
+                        '15min': float(m['avg15min'])
+                    }
                 } 
-        if len(self.mem) == 0 or len(self.swap) == 0 or len(self.cpu) == 0:
+        # Get IO stat values for selected devices
+        try:
+            for device in self._devices:
+                with open('/sys/block/' + device + '/stat') as f:
+                    line = f.readline()
+                    p = self.block_stat_pattern.match(line)
+                    if p:
+                        m = p.groupdict()
+                        self.io[device] = {
+                            'read': {
+                                 'bytes': int(m['readsectors']) * 512,
+                                 'ms': int(m['readticks'])
+                            },
+                            'write': {
+                                'bytes': int(m['writesectors']) * 512,
+                                'ms': int(m['writeticks'])
+                            }
+                        }
+        except IOError:
             raise InfoError()
-
+        if len(self.mem) == 0 or len(self.swap) == 0 or len(self.cpu) == 0 or len(self.io) != len(self._devices):
+            raise InfoError()
