@@ -42,10 +42,14 @@ class BoxInfo(object):
    """
     def __init__(self, devices=None):
         """ Create a new BoxInfo object and read initial statistics """
+        self._devices = []
         if devices:
-            self._devices = devices
-        else:
-            self._devices = []
+            for d in devices:
+                if ':' in d:
+                    entry = tuple(d.split(':')[0:2])
+                else:
+                    entry = (d, d)
+                self._devices.append(entry)
         self.unit_fact = {'b': 1, 'kb': 1024, 'mb': 1024*1024, 'gb': 1024*1024*1024}
         self.meminfo_pattern = re.compile(r'^(?P<label>\S+):\s+(?P<value>\S+)\s+(?P<unit>\S+)$')
         self.loadavg_pattern = re.compile(r'^(?P<avg1min>[0-9.]+) (?P<avg5min>[0-9.]+) (?P<avg15min>[0-9.]+) (\d+)/(\d+) (\d+)$')
@@ -107,12 +111,12 @@ class BoxInfo(object):
         # Get IO stat values for selected devices
         try:
             for device in self._devices:
-                with open('/sys/block/' + device + '/stat') as f:
+                with open('/sys/block/' + device[0] + '/stat') as f:
                     line = f.readline()
                     p = self.block_stat_pattern.match(line)
                     if p:
                         m = p.groupdict()
-                        self.io[device] = {
+                        self.io[device[1]] = {
                             'read': {
                                  'bytes': int(m['readsectors']) * 512,
                                  'ms': int(m['readticks'])
