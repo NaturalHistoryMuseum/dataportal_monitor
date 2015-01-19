@@ -44,7 +44,7 @@ def daemon_loop(logger, boxinfo, graphite, reader, parser):
         try:
             boxinfo.refresh()
         except InfoError:
-            log.error('Failed to get cpu/mem/swap/io stats')
+            logger.error('Failed to get cpu/mem/swap/io stats')
         else:
             graphite.add('cpu.loadavg.1min', boxinfo.cpu['loadavg']['1min'])
             graphite.add('mem.total', boxinfo.mem['total'])
@@ -60,7 +60,7 @@ def daemon_loop(logger, boxinfo, graphite, reader, parser):
         try:
             graphite.flush()
         except FailedToConnect:
-            log.error('Failed to connect to graphite server')
+            logger.error('Failed to connect to graphite server')
         # Sleep
         left = loopstart + config['update_period'] - time.time()
         if left > 0:
